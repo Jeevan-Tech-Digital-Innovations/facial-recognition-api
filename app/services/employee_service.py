@@ -28,10 +28,10 @@ class EmployeeService:
 
     @property
     def face_service(self):
-        """Lazy load face service to avoid circular import."""
+        """Lazy load face service singleton to avoid circular import."""
         if self._face_service is None:
-            from app.services.face_service import FaceService
-            self._face_service = FaceService()
+            from app.services.face_service import get_face_service
+            self._face_service = get_face_service()
         return self._face_service
 
     async def register_employee(

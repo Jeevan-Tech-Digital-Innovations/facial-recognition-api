@@ -79,14 +79,18 @@ def create_indexes(engine):
     print("\nCreating indexes...")
 
     indexes = [
-        # IVFFlat index for face embedding similarity search
-        # Note: This requires data to be present for optimal list count
-        # For small datasets (<1000), we use a small lists value
+        # HNSW index for face embedding similarity search.
+        # HNSW is preferred over IVFFlat because:
+        #   - Works correctly on empty tables (IVFFlat needs data for k-means)
+        #   - Better recall at all dataset sizes
+        #   - No need to tune 'lists' parameter based on row count
+        # m=16: number of bi-directional links per node (default, good for 512-D)
+        # ef_construction=64: build-time search width (higher = better recall, slower build)
         """
         CREATE INDEX IF NOT EXISTS idx_face_embeddings_vector 
         ON face_embeddings 
-        USING ivfflat (embedding vector_cosine_ops)
-        WITH (lists = 100)
+        USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 64)
         """,
         # Index for entry logs by date
         """

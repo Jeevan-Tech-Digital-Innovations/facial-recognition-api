@@ -2,6 +2,7 @@ from datetime import date, datetime
 from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import EntryMethod
 from app.models.entry_log import EntryLog
 from app.models.employee import Employee
 from app.repositories.entry_log_repo import EntryLogRepository
@@ -25,18 +26,18 @@ class EntryService:
     ) -> EntryLog:
         """
         Log a face-based entry.
-        
+
         Args:
             employee_id: Internal employee ID (from DB)
             confidence: Match confidence score
             device_id: Optional device/kiosk identifier
-            
+
         Returns:
             Created entry log
         """
         entry_log = EntryLog(
             employee_id=employee_id,
-            entry_method="face",
+            entry_method=EntryMethod.FACE,
             match_confidence=confidence,
             device_id=device_id,
         )
@@ -49,14 +50,14 @@ class EntryService:
     ) -> Tuple[EntryLog, Employee]:
         """
         Log a manual entry using employee ID string.
-        
+
         Args:
             employee_id_str: Employee ID string (e.g., EMP-001)
             device_id: Optional device/kiosk identifier
-            
+
         Returns:
             Tuple of (entry log, employee)
-            
+
         Raises:
             NotFoundException: If employee not found or inactive
         """
@@ -71,7 +72,7 @@ class EntryService:
         # Create entry log
         entry_log = EntryLog(
             employee_id=employee.id,
-            entry_method="manual",
+            entry_method=EntryMethod.MANUAL,
             match_confidence=None,  # No confidence for manual entry
             device_id=device_id,
         )

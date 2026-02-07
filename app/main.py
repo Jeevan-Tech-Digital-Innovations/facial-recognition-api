@@ -1,3 +1,4 @@
+import logging
 import sys
 import os
 from pathlib import Path
@@ -14,7 +15,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
+from app.core.logging import setup_logging
 from app.core.exceptions import AppException, app_exception_handler, generic_exception_handler
+
+# Initialize structured logging before anything else
+setup_logging()
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -23,16 +29,13 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown events."""
     # Startup
-    # Create face images directory
     Path(settings.FACE_IMAGES_DIR).mkdir(parents=True, exist_ok=True)
-
-    # Pre-load face model (will be done in face_service)
-    print("Starting Facial Recognition API...")
+    logger.info("Starting Facial Recognition API...")
 
     yield
 
     # Shutdown
-    print("Shutting down Facial Recognition API...")
+    logger.info("Shutting down Facial Recognition API...")
 
 
 # Create FastAPI app

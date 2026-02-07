@@ -1,6 +1,11 @@
+import logging
+import uuid
+
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class AppException(Exception):
@@ -69,6 +74,10 @@ class InvalidImageException(AppException):
 
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     """Global exception handler for AppException."""
+    logger.warning(
+        "AppException: status=%d message='%s' path=%s",
+        exc.status_code, exc.message, request.url.path,
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -80,12 +89,22 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
 
 
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Global exception handler for unhandled exceptions."""
+    """Global exception handler for unhandled exceptions.
+
+    Logs the full error internally but returns only a safe,
+    non-leaking error reference to the client.
+    """
+    error_id = uuid.uuid4().hex[:12]
+    logger.error(
+        "Unhandled exception [error_id=%s] path=%s: %s",
+        error_id, request.url.path, exc,
+        exc_info=True,
+    )
     return JSONResponse(
         status_code=500,
         content={
             "success": False,
             "message": "Internal server error",
-            "details": str(exc) if str(exc) else None,
+            "error_id": error_id,
         },
     )

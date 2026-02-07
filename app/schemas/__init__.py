@@ -1,4 +1,4 @@
-from app.schemas.common import APIResponse, PaginationParams, PaginatedResponse
+from app.schemas.common import APIResponse
 from app.schemas.employee import (
     EmployeeCreate,
     EmployeeUpdate,
@@ -10,8 +10,6 @@ from app.schemas.entry import ManualEntryRequest, EntryLogResponse, EntryLogsRes
 
 __all__ = [
     "APIResponse",
-    "PaginationParams",
-    "PaginatedResponse",
     "EmployeeCreate",
     "EmployeeUpdate",
     "EmployeeResponse",

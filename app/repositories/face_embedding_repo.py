@@ -1,10 +1,32 @@
+import logging
+import math
 from typing import Optional, List, Tuple
-from sqlalchemy import select, func, delete, text
+
+from sqlalchemy import select, func, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.models.face_embedding import FaceEmbedding
 from app.models.employee import Employee
+
+logger = logging.getLogger(__name__)
+
+
+def _validate_embedding(embedding: List[float]) -> None:
+    """
+    Validate that an embedding vector contains only finite float values.
+
+    Raises:
+        ValueError: If embedding contains non-finite or non-numeric values
+    """
+    if not embedding:
+        raise ValueError("Embedding vector must not be empty")
+
+    for i, val in enumerate(embedding):
+        if not isinstance(val, (int, float)):
+            raise ValueError(f"Embedding value at index {i} is not numeric: {type(val)}")
+        if not math.isfinite(val):
+            raise ValueError(f"Embedding value at index {i} is not finite: {val}")
 
 
 class FaceEmbeddingRepository:
@@ -55,48 +77,46 @@ class FaceEmbeddingRepository:
     ) -> List[Tuple[FaceEmbedding, float]]:
         """
         Find similar face embeddings using pgvector cosine distance.
-        
+
+        Uses pgvector's SQLAlchemy ORM integration for safe parameterized
+        vector queries (no string interpolation).
+
         Args:
             embedding: 512-dimensional face embedding vector
             threshold: Maximum cosine distance for a match (lower = more similar)
             limit: Maximum number of results
-            
+
         Returns:
             List of (FaceEmbedding, distance) tuples, sorted by distance ascending
         """
-        # Use pgvector's cosine distance operator (<=>)
-        # Cosine distance = 1 - cosine_similarity, so lower is more similar
-        embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-        
-        # Use string formatting for the vector literal since asyncpg doesn't handle it well with params
-        # First, let's get all matches without threshold to debug
-        query = text(f"""
-            SELECT fe.id, fe.employee_id, fe.image_path, fe.is_primary, fe.created_at,
-                   fe.embedding <=> '{embedding_str}'::vector AS distance
-            FROM face_embeddings fe
-            JOIN employees e ON fe.employee_id = e.id
-            WHERE e.is_active = true
-              AND fe.embedding <=> '{embedding_str}'::vector < :threshold
-            ORDER BY distance ASC
-            LIMIT :limit
-        """)
-        
-        # Log for debugging
-        import logging
-        logging.info(f"Searching with threshold: {threshold}")
+        # Validate embedding values are all finite numbers
+        _validate_embedding(embedding)
 
-        result = await self.db.execute(
-            query,
-            {"threshold": threshold, "limit": limit}
+        # Use pgvector's SQLAlchemy cosine_distance method which properly
+        # parameterizes the vector value -- no f-string SQL interpolation
+        distance_expr = FaceEmbedding.embedding.cosine_distance(embedding)
+
+        # Step 1: Find matching IDs with distances using parameterized query
+        query = (
+            select(FaceEmbedding.id, distance_expr.label("distance"))
+            .join(Employee, FaceEmbedding.employee_id == Employee.id)
+            .where(Employee.is_active == True)
+            .where(distance_expr < threshold)
+            .order_by(distance_expr.asc())
+            .limit(limit)
         )
-        rows = result.fetchall()
 
+        logger.info("Searching with threshold=%.3f, limit=%d", threshold, limit)
+
+        result = await self.db.execute(query)
+        rows = result.all()
+
+        # Step 2: Fetch full objects with employee relationship
         embeddings_with_distance = []
         for row in rows:
-            # Fetch the full FaceEmbedding object with employee relationship
             emb = await self.get_by_id(row.id)
             if emb:
-                embeddings_with_distance.append((emb, row.distance))
+                embeddings_with_distance.append((emb, float(row.distance)))
 
         return embeddings_with_distance
 
@@ -107,11 +127,11 @@ class FaceEmbeddingRepository:
     ) -> Optional[Tuple[FaceEmbedding, float]]:
         """
         Find the best matching face embedding.
-        
+
         Args:
             embedding: 512-dimensional face embedding vector
             threshold: Maximum cosine distance for a match
-            
+
         Returns:
             Tuple of (FaceEmbedding, distance) or None if no match found
         """
@@ -139,24 +159,18 @@ class FaceEmbeddingRepository:
         Set a face embedding as primary for an employee.
         Unsets any existing primary embedding.
         """
-        # Unset existing primary
+        # Unset existing primary (using ORM update instead of raw text)
         await self.db.execute(
-            text("""
-                UPDATE face_embeddings 
-                SET is_primary = false 
-                WHERE employee_id = :employee_id AND is_primary = true
-            """),
-            {"employee_id": employee_id}
+            update(FaceEmbedding)
+            .where(FaceEmbedding.employee_id == employee_id, FaceEmbedding.is_primary == True)
+            .values(is_primary=False)
         )
 
         # Set new primary
         await self.db.execute(
-            text("""
-                UPDATE face_embeddings 
-                SET is_primary = true 
-                WHERE id = :embedding_id
-            """),
-            {"embedding_id": embedding_id}
+            update(FaceEmbedding)
+            .where(FaceEmbedding.id == embedding_id)
+            .values(is_primary=True)
         )
         await self.db.flush()
         return True

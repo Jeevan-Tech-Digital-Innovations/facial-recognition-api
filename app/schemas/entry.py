@@ -57,6 +57,21 @@ class EntryLogsResponse(BaseModel):
     manual_entries: int = Field(..., description="Count of manual entries")
 
 
+class EmployeeEntryLogsResponse(BaseModel):
+    """Response schema for a specific employee's entry logs."""
+
+    employee_id: str
+    employee_name: str
+    items: List[EntryLogResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    days_range: int = Field(..., description="Number of days included in the query")
+    face_entries: int = Field(..., description="Count of face-based entries in current page")
+    manual_entries: int = Field(..., description="Count of manual entries in current page")
+
+
 class EntryStatsSummary(BaseModel):
     """Summary statistics for entries."""
 

@@ -1,3 +1,4 @@
+from zoneinfo import ZoneInfo
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from urllib.parse import quote_plus
@@ -23,8 +24,19 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
     CORS_ORIGINS: str = "*"
 
+    # Timezone for date-based queries (entry logs, stats).
+    # Must be a valid IANA timezone name (e.g. "Asia/Kolkata", "US/Eastern").
+    # This ensures "today" and date-range queries match the facility's
+    # local wall-clock time, not UTC.
+    APP_TIMEZONE: str = "UTC"
+
     # Storage
     FACE_IMAGES_DIR: str = "face_images"
+
+    @property
+    def tz(self) -> ZoneInfo:
+        """Get the configured timezone as a ZoneInfo object."""
+        return ZoneInfo(self.APP_TIMEZONE)
 
     @property
     def DATABASE_URL(self) -> str:

@@ -1,11 +1,39 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Optional, List, Tuple
+
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from app.core.config import get_settings
+from app.core.enums import EntryMethod
 from app.models.entry_log import EntryLog
 from app.models.employee import Employee
+
+settings = get_settings()
+
+
+def _day_range(target_date: date) -> tuple[datetime, datetime]:
+    """
+    Return timezone-aware start/end datetimes for a given date
+    in the application's configured timezone (APP_TIMEZONE).
+
+    When PostgreSQL compares a ``timestamptz`` column against these
+    timezone-aware boundaries, it correctly converts both sides to
+    the same reference point.  So if APP_TIMEZONE=Asia/Kolkata,
+    querying for "2026-02-08" builds the range
+    ``2026-02-08 00:00:00+05:30`` to ``2026-02-08 23:59:59+05:30``,
+    which matches entries stored at ``2026-02-07T18:30Z`` and later.
+    """
+    tz = settings.tz
+    start_of_day = datetime.combine(target_date, time.min, tzinfo=tz)
+    end_of_day = datetime.combine(target_date, time.max, tzinfo=tz)
+    return start_of_day, end_of_day
+
+
+def _today() -> date:
+    """Return today's date in the application's configured timezone."""
+    return datetime.now(settings.tz).date()
 
 
 class EntryLogRepository:
@@ -38,12 +66,11 @@ class EntryLogRepository:
     ) -> Tuple[List[EntryLog], int]:
         """
         Get entry logs for a specific date.
-        
+
         Returns:
             Tuple of (entry logs list, total count)
         """
-        start_of_day = datetime.combine(target_date, datetime.min.time())
-        end_of_day = datetime.combine(target_date, datetime.max.time())
+        start_of_day, end_of_day = _day_range(target_date)
 
         # Base filter
         date_filter = and_(
@@ -79,17 +106,17 @@ class EntryLogRepository:
     ) -> Tuple[List[EntryLog], int]:
         """
         Get entry logs for a specific employee.
-        
+
         Args:
             employee_id: Internal employee ID
             days: Number of days to look back
             offset: Pagination offset
             limit: Pagination limit
-            
+
         Returns:
             Tuple of (entry logs list, total count)
         """
-        start_date = datetime.now() - timedelta(days=days)
+        start_date = datetime.now(settings.tz) - timedelta(days=days)
 
         # Base filter
         filters = and_(
@@ -119,12 +146,11 @@ class EntryLogRepository:
     async def get_stats_by_date(self, target_date: date) -> dict:
         """
         Get entry statistics for a specific date.
-        
+
         Returns:
             Dictionary with total, face_entries, manual_entries, unique_employees
         """
-        start_of_day = datetime.combine(target_date, datetime.min.time())
-        end_of_day = datetime.combine(target_date, datetime.max.time())
+        start_of_day, end_of_day = _day_range(target_date)
 
         date_filter = and_(
             EntryLog.entry_time >= start_of_day,
@@ -140,7 +166,7 @@ class EntryLogRepository:
         # Face entries
         face_result = await self.db.execute(
             select(func.count(EntryLog.id)).where(
-                and_(date_filter, EntryLog.entry_method == "face")
+                and_(date_filter, EntryLog.entry_method == EntryMethod.FACE)
             )
         )
         face_entries = face_result.scalar() or 0
@@ -165,14 +191,12 @@ class EntryLogRepository:
     async def get_today_entries(
         self, offset: int = 0, limit: int = 100
     ) -> Tuple[List[EntryLog], int]:
-        """Get today's entry logs."""
-        return await self.get_by_date(date.today(), offset, limit)
+        """Get today's entry logs using the configured timezone."""
+        return await self.get_by_date(_today(), offset, limit)
 
     async def employee_entered_today(self, employee_id: int) -> bool:
         """Check if employee has already entered today."""
-        today = date.today()
-        start_of_day = datetime.combine(today, datetime.min.time())
-        end_of_day = datetime.combine(today, datetime.max.time())
+        start_of_day, end_of_day = _day_range(_today())
 
         result = await self.db.execute(
             select(func.count(EntryLog.id)).where(

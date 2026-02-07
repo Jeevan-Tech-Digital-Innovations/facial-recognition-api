@@ -1,18 +1,26 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form
-from fastapi.responses import JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+import logging
 from typing import Optional
+
+from fastapi import APIRouter, Depends, UploadFile, File, Form
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.config import get_settings
-from app.services.face_service import FaceService
+from app.core.exceptions import (
+    FaceNotDetectedException,
+    FaceNotRecognizedException,
+    MultipleFacesException,
+)
+from app.services.face_service import get_face_service
 from app.services.entry_service import EntryService
 from app.repositories.face_embedding_repo import FaceEmbeddingRepository
+from app.models.face_embedding import FaceEmbedding
+from app.models.employee import Employee
 from app.schemas.recognize import RecognizeResponse, RecognizeFailedResponse
 from app.utils.image_utils import validate_image
-from app.core.exceptions import FaceNotDetectedException, MultipleFacesException
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 router = APIRouter()
 
@@ -22,31 +30,34 @@ async def debug_recognize(
     face_image: UploadFile = File(..., description="Face image to test"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Debug endpoint to check face distances without threshold."""
+    """Debug endpoint to check face distances without threshold.
+
+    WARNING: This endpoint should be removed or protected in production.
+    """
     image_bytes = await validate_image(face_image)
-    face_service = FaceService()
-    
-    try:
-        embedding = await face_service.detect_and_embed(image_bytes)
-    except Exception as e:
-        return {"error": str(e)}
-    
-    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-    
-    # Get all faces with distances (no threshold)
-    query = text(f"""
-        SELECT fe.id, e.employee_id, e.name,
-               fe.embedding <=> '{embedding_str}'::vector AS distance
-        FROM face_embeddings fe
-        JOIN employees e ON fe.employee_id = e.id
-        WHERE e.is_active = true
-        ORDER BY distance ASC
-        LIMIT 5
-    """)
-    
+    face_service = get_face_service()
+
+    embedding = await face_service.detect_and_embed(image_bytes)
+
+    # Use pgvector's ORM cosine_distance (safe, parameterized)
+    distance_expr = FaceEmbedding.embedding.cosine_distance(embedding)
+
+    query = (
+        select(
+            FaceEmbedding.id,
+            Employee.employee_id,
+            Employee.name,
+            distance_expr.label("distance"),
+        )
+        .join(Employee, FaceEmbedding.employee_id == Employee.id)
+        .where(Employee.is_active == True)
+        .order_by(distance_expr.asc())
+        .limit(5)
+    )
+
     result = await db.execute(query)
-    rows = result.fetchall()
-    
+    rows = result.all()
+
     return {
         "current_threshold": settings.FACE_MATCH_THRESHOLD,
         "matches": [
@@ -55,17 +66,19 @@ async def debug_recognize(
                 "employee_id": row.employee_id,
                 "name": row.name,
                 "distance": float(row.distance),
-                "would_match": float(row.distance) < settings.FACE_MATCH_THRESHOLD
+                "would_match": float(row.distance) < settings.FACE_MATCH_THRESHOLD,
             }
             for row in rows
-        ]
+        ],
     }
 
 
 @router.post(
     "",
+    response_model=RecognizeResponse,
     responses={
         200: {"model": RecognizeResponse, "description": "Face recognized successfully"},
+        400: {"description": "No face detected or multiple faces"},
         404: {"model": RecognizeFailedResponse, "description": "Face not recognized"},
     },
 )
@@ -77,44 +90,30 @@ async def recognize_face(
 ):
     """
     Recognize an employee from their face image.
-    
+
     This endpoint:
     1. Detects the face in the uploaded image
     2. Generates a face embedding
     3. Searches for the closest match in the database
     4. If found, optionally logs the entry and returns employee info
-    5. If not found, returns 404 with suggestion to use manual entry
-    
+    5. If not found, raises 404 with suggestion to use manual entry
+
     The image should contain exactly one face for best results.
+
+    Raises FaceNotDetectedException (400) or MultipleFacesException (400)
+    through the global exception handler for consistent error responses.
     """
     # Validate image
     image_bytes = await validate_image(face_image)
 
-    # Initialize services
-    face_service = FaceService()
+    # Use singleton face service (consistent model instance)
+    face_service = get_face_service()
     embedding_repo = FaceEmbeddingRepository(db)
 
-    try:
-        # Detect face and generate embedding
-        embedding = await face_service.detect_and_embed(image_bytes)
-    except FaceNotDetectedException:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "success": False,
-                "message": "No face detected in the image. Please ensure your face is clearly visible.",
-                "suggestion": "Try again with better lighting or use manual entry.",
-            },
-        )
-    except MultipleFacesException:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "success": False,
-                "message": "Multiple faces detected. Please provide an image with only one face.",
-                "suggestion": "Ensure only one person is in the frame.",
-            },
-        )
+    # Detect face and generate embedding
+    # FaceNotDetectedException / MultipleFacesException propagate
+    # to the global exception handler for a consistent error response
+    embedding = await face_service.detect_and_embed(image_bytes)
 
     # Search for matching face
     match_result = await embedding_repo.find_best_match(
@@ -123,18 +122,19 @@ async def recognize_face(
     )
 
     if not match_result:
-        return JSONResponse(
-            status_code=404,
-            content=RecognizeFailedResponse(
-                success=False,
-                message="Face not recognized. Please use manual entry.",
-                suggestion="Use POST /api/entry/manual with your employee ID",
-            ).model_dump(),
+        raise FaceNotRecognizedException(
+            message="Face not recognized. Please use manual entry.",
+            details={"suggestion": "Use POST /api/entry/manual with your employee ID"},
         )
 
     face_embedding, distance = match_result
     employee = face_embedding.employee
     confidence = face_service.distance_to_confidence(distance)
+
+    logger.info(
+        "Face recognized: employee=%s confidence=%.4f",
+        employee.employee_id, confidence,
+    )
 
     # Log entry if requested
     entry_logged = False

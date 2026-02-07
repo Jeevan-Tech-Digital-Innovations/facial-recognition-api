@@ -11,7 +11,12 @@ if TYPE_CHECKING:
 
 
 class EntryLog(Base):
-    """Entry log model - tracks canteen entries (face or manual)."""
+    """Entry log model - tracks canteen entries (face or manual).
+
+    entry_method values are defined by app.core.enums.EntryMethod:
+        - "face"   : recognized via facial recognition
+        - "manual" : entered manually by employee ID
+    """
 
     __tablename__ = "entry_logs"
 
@@ -21,7 +26,7 @@ class EntryLog(Base):
     )
     entry_method: Mapped[str] = mapped_column(
         String(20), nullable=False
-    )  # 'face' or 'manual'
+    )
     match_confidence: Mapped[Optional[float]] = mapped_column(
         Float, nullable=True
     )  # null if manual
