@@ -1,0 +1,28 @@
+# FastAPI and server
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# Database
+sqlalchemy==2.0.36
+asyncpg==0.30.0
+pgvector==0.3.6
+
+# Face recognition
+deepface==0.0.93
+opencv-python-headless==4.10.0.84
+tf-keras==2.18.0
+
+# Image processing
+pillow==11.1.0
+numpy==1.26.4
+
+# Configuration and utilities
+python-dotenv==1.0.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+email-validator==2.3.0
+aiofiles==24.1.0
+
+# Database setup (sync driver)
+psycopg2-binary==2.9.11
