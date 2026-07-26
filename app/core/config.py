@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # Storage
     FACE_IMAGES_DIR: str = "face_images"
 
+    # Payroll API Integration
+    PAYROLL_API_BASE_URL: str = ""
+    PAYROLL_API_KEY: str = ""
+    PAYROLL_EMPLOYEE_SYNC_ENABLED: bool = False
+
     @property
     def tz(self) -> ZoneInfo:
         """Get the configured timezone as a ZoneInfo object."""

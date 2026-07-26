@@ -14,6 +14,7 @@ from app.core.exceptions import (
 )
 from app.services.face_service import get_face_service
 from app.services.entry_service import EntryService
+from app.services.payroll_service import get_payroll_service
 from app.repositories.face_embedding_repo import FaceEmbeddingRepository
 from app.models.face_embedding import FaceEmbedding
 from app.models.employee import Employee
@@ -138,14 +139,51 @@ async def recognize_face(
 
     # Log entry if requested
     entry_logged = False
+    payroll_synced = False
+    payroll_punch_id = None
+
     if log_entry:
         entry_service = EntryService(db)
-        await entry_service.log_face_entry(
+        entry = await entry_service.log_face_entry(
             employee_id=employee.id,
             confidence=confidence,
             device_id=device_id,
         )
         entry_logged = True
+
+        # Server-to-server: trigger payroll punch
+        payroll_service = get_payroll_service()
+        if payroll_service.is_configured and employee.payroll_emp_no:
+            try:
+                direction = await payroll_service.determine_punch_direction(
+                    employee.payroll_emp_no, device_id or ""
+                )
+                punch_result = await payroll_service.record_punch(
+                    emp_no=employee.payroll_emp_no,
+                    punch_direction=direction,
+                    device_username=device_id or "",
+                    face_match_confidence=confidence,
+                )
+                if punch_result:
+                    payroll_synced = True
+                    payroll_punch_id = (
+                        punch_result.get("data", {}).get("punchId")
+                        if isinstance(punch_result.get("data"), dict)
+                        else None
+                    )
+                    # Update entry log with sync status
+                    entry.payroll_synced = True
+                    entry.payroll_punch_id = payroll_punch_id
+                    await db.flush()
+                else:
+                    entry.payroll_synced = False
+                    entry.sync_error = "Payroll API returned error"
+                    await db.flush()
+            except Exception as e:
+                logger.error("Payroll sync failed: %s", str(e))
+                entry.payroll_synced = False
+                entry.sync_error = str(e)[:500]
+                await db.flush()
 
     return RecognizeResponse(
         success=True,

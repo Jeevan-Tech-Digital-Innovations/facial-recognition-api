@@ -24,5 +24,8 @@ pydantic-settings==2.7.1
 email-validator==2.3.0
 aiofiles==24.1.0
 
+# HTTP client for server-to-server calls
+httpx==0.28.1
+
 # Database setup (sync driver)
 psycopg2-binary==2.9.11

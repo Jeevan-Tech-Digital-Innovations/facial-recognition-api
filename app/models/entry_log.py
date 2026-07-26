@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import String, Float, DateTime, ForeignKey, Integer, func
+from sqlalchemy import String, Float, Boolean, DateTime, ForeignKey, Integer, BigInteger, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -35,6 +35,17 @@ class EntryLog(Base):
     )  # optional kiosk identifier
     entry_time: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    # Payroll sync tracking
+    payroll_synced: Mapped[Optional[bool]] = mapped_column(
+        Boolean, default=False, nullable=True
+    )
+    payroll_punch_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, nullable=True
+    )
+    sync_error: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
     )
 
     # Relationships

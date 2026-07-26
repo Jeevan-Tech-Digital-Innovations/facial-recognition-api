@@ -32,6 +32,10 @@ class EntryLogResponse(BaseModel):
     )
     device_id: Optional[str] = Field(None, description="Device/kiosk ID")
     entry_time: datetime
+    # Payroll sync fields
+    payroll_synced: Optional[bool] = Field(None, description="Whether synced to payroll")
+    payroll_punch_id: Optional[int] = Field(None, description="Payroll punch record ID")
+    department: Optional[str] = Field(None, description="Employee department")
 
     class Config:
         from_attributes = True

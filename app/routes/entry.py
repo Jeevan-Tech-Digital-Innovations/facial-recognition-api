@@ -29,6 +29,9 @@ def _entry_to_response(entry) -> EntryLogResponse:
         match_confidence=entry.match_confidence,
         device_id=entry.device_id,
         entry_time=entry.entry_time,
+        payroll_synced=getattr(entry, 'payroll_synced', None),
+        payroll_punch_id=getattr(entry, 'payroll_punch_id', None),
+        department=entry.employee.department if entry.employee else None,
     )
 
 

@@ -102,6 +102,11 @@ def create_indexes(engine):
         CREATE INDEX IF NOT EXISTS idx_entry_logs_employee_time 
         ON entry_logs (employee_id, entry_time DESC)
         """,
+        # Index for unsynced entry logs (payroll sync queue)
+        """
+        CREATE INDEX IF NOT EXISTS idx_entry_logs_payroll_synced 
+        ON entry_logs (payroll_synced) WHERE payroll_synced = false
+        """,
     ]
 
     success = True
@@ -112,10 +117,65 @@ def create_indexes(engine):
                 conn.commit()
             # Extract index name for logging
             idx_name = idx_sql.split("IF NOT EXISTS")[1].split("ON")[0].strip()
-            print(f"  ✓ Index {idx_name} created/verified")
+            print(f"  \u2713 Index {idx_name} created/verified")
         except Exception as e:
-            print(f"  ✗ Failed to create index: {e}")
+            print(f"  \u2717 Failed to create index: {e}")
             success = False
+
+    return success
+
+
+def migrate_schema(engine):
+    """Apply incremental schema migrations for new columns."""
+    print("\nApplying schema migrations...")
+
+    migrations = [
+        # Add payroll_emp_no to employees table
+        ("employees.payroll_emp_no", """
+            ALTER TABLE employees 
+            ADD COLUMN IF NOT EXISTS payroll_emp_no VARCHAR(50)
+        """),
+        ("employees.payroll_emp_no_unique", """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_indexes 
+                    WHERE indexname = 'ix_employees_payroll_emp_no'
+                ) THEN
+                    CREATE UNIQUE INDEX ix_employees_payroll_emp_no 
+                    ON employees (payroll_emp_no) WHERE payroll_emp_no IS NOT NULL;
+                END IF;
+            END $$
+        """),
+        # Add payroll sync columns to entry_logs
+        ("entry_logs.payroll_synced", """
+            ALTER TABLE entry_logs 
+            ADD COLUMN IF NOT EXISTS payroll_synced BOOLEAN DEFAULT FALSE
+        """),
+        ("entry_logs.payroll_punch_id", """
+            ALTER TABLE entry_logs 
+            ADD COLUMN IF NOT EXISTS payroll_punch_id BIGINT
+        """),
+        ("entry_logs.sync_error", """
+            ALTER TABLE entry_logs 
+            ADD COLUMN IF NOT EXISTS sync_error TEXT
+        """),
+    ]
+
+    success = True
+    for name, sql in migrations:
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(sql))
+                conn.commit()
+            print(f"  \u2713 Migration {name} applied")
+        except Exception as e:
+            error_msg = str(e)
+            if "already exists" in error_msg.lower() or "duplicate" in error_msg.lower():
+                print(f"  \u2713 Migration {name} already applied")
+            else:
+                print(f"  \u2717 Migration {name} failed: {e}")
+                success = False
 
     return success
 
@@ -193,6 +253,7 @@ def main():
     
     steps = [
         ("database tables", lambda: create_tables(engine)),
+        ("schema migrations", lambda: migrate_schema(engine)),
         ("indexes", lambda: create_indexes(engine) if pgvector_ok else True),
         ("verification", lambda: verify_setup(engine)),
     ]
