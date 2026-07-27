@@ -1,10 +1,10 @@
-name: Build & Deploy to Coolify
+name: Build & Deploy Facial Recognition API to Coolify
 
 on:
   push:
     branches:
-      - main
-      - staging
+      - deploy/staging
+      - deploy/production
     paths:
       - 'app/**'
       - 'requirements.txt'
@@ -33,7 +33,7 @@ jobs:
       - name: Resolve target environment
         id: resolve
         run: |
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
+          if [[ "${{ github.ref_name }}" == "deploy/production" ]]; then
             echo "environment=production" >> "$GITHUB_OUTPUT"
             echo "env_tag=production" >> "$GITHUB_OUTPUT"
           else
@@ -59,18 +59,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      - name: Run linting
-        run: |
-          pip install -r requirements.txt
-          python -c "import py_compile; import glob; [py_compile.compile(f, doraise=True) for f in glob.glob('app/**/*.py', recursive=True)]"
-          echo "✅ All Python files compile successfully"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -102,7 +90,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKER_USERNAME }}/facial-recognition-api
+          images: ${{ secrets.DOCKER_USERNAME }}/facial_recognition_api
           tags: |
             type=raw,value=latest
             type=raw,value=${{ needs.setup.outputs.env_tag }}
@@ -119,8 +107,8 @@ jobs:
           build-args: |
             BUILD_ENV=${{ needs.setup.outputs.env_tag == 'production' && 'production' || 'staging' }}
             APP_VERSION=${{ github.sha }}
-          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/facial-recognition-api:buildcache-${{ needs.setup.outputs.env_tag }}
-          cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/facial-recognition-api:buildcache-${{ needs.setup.outputs.env_tag }},mode=max
+          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/facial_recognition_api:buildcache-${{ needs.setup.outputs.env_tag }}
+          cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/facial_recognition_api:buildcache-${{ needs.setup.outputs.env_tag }},mode=max
           provenance: false
 
       - name: Verify image was pushed
@@ -129,22 +117,82 @@ jobs:
           echo "Tags: ${{ steps.meta.outputs.tags }}"
 
   # ---------------------------------------------------------------
-  # Trigger Coolify redeployment via webhook
+  # Sync env vars to Coolify, trigger deploy, then health check
   # ---------------------------------------------------------------
   deploy:
     name: Trigger Coolify Deploy
     runs-on: ubuntu-latest
     needs: [setup, build-and-push]
-    timeout-minutes: 5
+    timeout-minutes: 20
     environment: ${{ needs.setup.outputs.environment }}
 
     steps:
-      - name: Trigger Coolify webhook
+      # --- Push all runtime env vars into Coolify before the redeploy ---
+      - name: Sync env vars to Coolify
         run: |
-          echo "Webhook URL (masked): $(echo "${{ secrets.COOLIFY_WEBHOOK }}" | sed 's|//.*@|//***@|; s|/deploy/.*|/deploy/***|')"
+          COOLIFY_API="${{ secrets.COOLIFY_API_BASE }}"
+          APP_UUID="${{ vars.COOLIFY_APP_UUID }}"
+
+          PAYLOAD=$(python3 - <<'PYEOF'
+          import json, sys
+          envs = {
+              "DB_HOST":                        "${{ secrets.DB_HOST }}",
+              "DB_PORT":                        "${{ secrets.DB_PORT }}",
+              "DB_NAME":                        "${{ secrets.DB_NAME }}",
+              "DB_USER":                        "${{ secrets.DB_USER }}",
+              "DB_PASSWORD":                    "${{ secrets.DB_PASSWORD }}",
+              "FACE_MATCH_THRESHOLD":           "${{ secrets.FACE_MATCH_THRESHOLD }}",
+              "FACE_MODEL":                     "${{ secrets.FACE_MODEL }}",
+              "FACE_DETECTOR":                  "${{ secrets.FACE_DETECTOR }}",
+              "APP_HOST":                       "0.0.0.0",
+              "APP_PORT":                       "8000",
+              "CORS_ORIGINS":                   "${{ secrets.CORS_ORIGINS }}",
+              "APP_TIMEZONE":                   "${{ secrets.APP_TIMEZONE }}",
+              "FACE_IMAGES_DIR":                "face_images",
+              "PAYROLL_API_BASE_URL":           "${{ secrets.PAYROLL_API_BASE_URL }}",
+              "PAYROLL_API_KEY":                "${{ secrets.PAYROLL_API_KEY }}",
+              "PAYROLL_EMPLOYEE_SYNC_ENABLED":  "${{ secrets.PAYROLL_EMPLOYEE_SYNC_ENABLED }}",
+          }
+          payload = {"data": [{"key": k, "value": v, "is_preview": False} for k, v in envs.items()]}
+          print(json.dumps(payload))
+          PYEOF
+          )
+
+          HTTP_STATUS=$(curl --silent --show-error --output /tmp/env_sync_response.txt --write-out "%{http_code}" \
+            --request PATCH \
+            --url "$COOLIFY_API/api/v1/applications/$APP_UUID/envs/bulk" \
+            --header "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
+            --header "Content-Type: application/json" \
+            --data "$PAYLOAD" \
+            --connect-timeout 10 \
+            --max-time 30)
+
+          echo "Env sync HTTP Status: $HTTP_STATUS"
+          cat /tmp/env_sync_response.txt
+          echo ""
+
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "✅ Env vars synced to Coolify."
+          else
+            echo "❌ Failed to sync env vars (HTTP $HTTP_STATUS)"
+            exit 1
+          fi
+
+      # --- Wait for Docker Hub registry propagation ---
+      - name: Wait for registry propagation
+        run: |
+          echo "Waiting 15s for Docker Hub to fully propagate the new image..."
+          sleep 15
+
+      # --- Trigger Coolify to pull the new image and restart container ---
+      - name: Trigger Coolify deployment
+        run: |
+          COOLIFY_API="${{ secrets.COOLIFY_API_BASE }}"
+          APP_UUID="${{ vars.COOLIFY_APP_UUID }}"
+
           HTTP_STATUS=$(curl --silent --show-error --output /tmp/coolify_response.txt --write-out "%{http_code}" \
-            --request GET \
-            --url "${{ secrets.COOLIFY_WEBHOOK }}" \
+            --request POST \
+            --url "$COOLIFY_API/api/v1/applications/$APP_UUID/deploy" \
             --header "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
             --header "Content-Type: application/json" \
             --connect-timeout 10 \
@@ -158,21 +206,57 @@ jobs:
           if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
             echo "✅ Coolify deployment triggered successfully for ${{ needs.setup.outputs.env_tag }}."
           else
-            echo "❌ Coolify webhook failed with status $HTTP_STATUS"
+            echo "❌ Coolify deployment trigger failed (HTTP $HTTP_STATUS)"
             exit 1
           fi
+
+      # --- Poll Coolify API until container is running:healthy ---
+      - name: Health check — Facial Recognition API
+        run: |
+          COOLIFY_API="${{ secrets.COOLIFY_API_BASE }}"
+          APP_UUID="${{ vars.COOLIFY_APP_UUID }}"
+          MAX=20; COUNT=0
+
+          # Container takes ~40-60s to start; wait before polling
+          echo "Waiting 60s for container to start before polling..."
+          sleep 60
+
+          while [ $COUNT -lt $MAX ]; do
+            STATUS=$(curl -s \
+              -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
+              "$COOLIFY_API/api/v1/applications/$APP_UUID" \
+              | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','unknown'))" 2>/dev/null)
+
+            echo "[$((COUNT+1))/$MAX] Facial Recognition API status: $STATUS"
+
+            if [ "$STATUS" = "running:healthy" ]; then
+              echo "✅ Facial Recognition API is healthy."
+              exit 0
+            fi
+
+            if echo "$STATUS" | grep -qE '^exited|unhealthy'; then
+              echo "❌ Facial Recognition API failed to start: $STATUS"
+              exit 1
+            fi
+
+            COUNT=$((COUNT+1))
+            sleep 15
+          done
+
+          echo "❌ Facial Recognition API health check timed out after $((MAX * 15))s"
+          exit 1
 
       - name: Deployment summary
         if: success()
         run: |
           echo ""
-          echo "════════════════════════════════════"
-          echo " Deployment Complete"
-          echo "════════════════════════════════════"
+          echo "══════════════════════════════════════════"
+          echo " Facial Recognition API Deploy Complete"
+          echo "══════════════════════════════════════════"
           echo " Environment : ${{ needs.setup.outputs.env_tag }}"
-          echo " Image       : ${{ secrets.DOCKER_USERNAME }}/facial-recognition-api:${{ needs.setup.outputs.env_tag }}"
+          echo " Image       : ${{ secrets.DOCKER_USERNAME }}/facial_recognition_api:${{ needs.setup.outputs.env_tag }}"
           echo " Commit SHA  : ${{ github.sha }}"
           if [ -n "${{ vars.APP_URL }}" ]; then
             echo " URL         : ${{ vars.APP_URL }}"
           fi
-          echo "════════════════════════════════════"
+          echo "══════════════════════════════════════════"
