@@ -56,6 +56,11 @@ COPY setup_db.py .
 # Create version file
 RUN echo "${APP_VERSION}" > /app/version.txt
 
+# Set writable home directory for model caches (DeepFace, TensorFlow, etc.)
+ENV HOME=/app \
+    DEEPFACE_HOME=/app/.deepface \
+    XDG_CACHE_HOME=/app/.cache
+
 # Switch to non-root user
 USER appuser
 
