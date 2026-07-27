@@ -130,7 +130,7 @@ jobs:
       # --- Push all runtime env vars into Coolify before the redeploy ---
       - name: Sync env vars to Coolify
         run: |
-          COOLIFY_API="${{ secrets.COOLIFY_API_BASE }}"
+          COOLIFY_API=$(echo "${{ secrets.COOLIFY_WEBHOOK }}" | grep -oP 'https?://[^/]+')
           APP_UUID="${{ vars.COOLIFY_APP_UUID }}"
 
           PAYLOAD=$(python3 - <<'PYEOF'
@@ -185,35 +185,50 @@ jobs:
           sleep 15
 
       # --- Trigger Coolify to pull the new image and restart container ---
-      - name: Trigger Coolify deployment
+      - name: Trigger Coolify webhook
         run: |
-          COOLIFY_API="${{ secrets.COOLIFY_API_BASE }}"
-          APP_UUID="${{ vars.COOLIFY_APP_UUID }}"
+          echo "Webhook URL (masked): $(echo "${{ secrets.COOLIFY_WEBHOOK }}" | sed 's|//.*@|//***@|; s|/deploy/.*|/deploy/***|')"
 
-          HTTP_STATUS=$(curl --silent --show-error --output /tmp/coolify_response.txt --write-out "%{http_code}" \
-            --request POST \
-            --url "$COOLIFY_API/api/v1/applications/$APP_UUID/deploy" \
-            --header "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
-            --header "Content-Type: application/json" \
-            --connect-timeout 10 \
-            --max-time 30)
+          MAX_RETRIES=3
+          RETRY_DELAY=10
+          ATTEMPT=1
 
-          echo "HTTP Status: $HTTP_STATUS"
-          echo "Response:"
-          cat /tmp/coolify_response.txt
-          echo ""
+          while [ $ATTEMPT -le $MAX_RETRIES ]; do
+            echo "--- Attempt $ATTEMPT of $MAX_RETRIES ---"
+            HTTP_STATUS=$(curl --silent --show-error --output /tmp/coolify_response.txt --write-out "%{http_code}" \
+              --request GET \
+              --url "${{ secrets.COOLIFY_WEBHOOK }}" \
+              --header "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
+              --header "Content-Type: application/json" \
+              --connect-timeout 10 \
+              --max-time 30)
 
-          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
-            echo "✅ Coolify deployment triggered successfully for ${{ needs.setup.outputs.env_tag }}."
-          else
-            echo "❌ Coolify deployment trigger failed (HTTP $HTTP_STATUS)"
-            exit 1
-          fi
+            echo "HTTP Status: $HTTP_STATUS"
+            echo "Response:"
+            cat /tmp/coolify_response.txt
+            echo ""
+
+            if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+              echo "✅ Coolify deployment triggered successfully for ${{ needs.setup.outputs.env_tag }}."
+              exit 0
+            fi
+
+            echo "⚠️ Attempt $ATTEMPT failed (HTTP $HTTP_STATUS)"
+            if [ $ATTEMPT -lt $MAX_RETRIES ]; then
+              echo "Retrying in ${RETRY_DELAY}s..."
+              sleep $RETRY_DELAY
+              RETRY_DELAY=$((RETRY_DELAY * 2))
+            fi
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          echo "❌ Coolify webhook failed after $MAX_RETRIES attempts"
+          exit 1
 
       # --- Poll Coolify API until container is running:healthy ---
       - name: Health check — Facial Recognition API
         run: |
-          COOLIFY_API="${{ secrets.COOLIFY_API_BASE }}"
+          COOLIFY_API=$(echo "${{ secrets.COOLIFY_WEBHOOK }}" | grep -oP 'https?://[^/]+')
           APP_UUID="${{ vars.COOLIFY_APP_UUID }}"
           MAX=20; COUNT=0
 
