@@ -32,6 +32,15 @@ async def lifespan(app: FastAPI):
     Path(settings.FACE_IMAGES_DIR).mkdir(parents=True, exist_ok=True)
     logger.info("Starting Facial Recognition API...")
 
+    # Ensure database schema exists (idempotent)
+    from app.core.database import init_db
+    try:
+        await init_db()
+        logger.info("Database schema verified/created")
+    except Exception as e:
+        logger.error("Database initialization failed: %s", e)
+        raise
+
     yield
 
     # Shutdown
