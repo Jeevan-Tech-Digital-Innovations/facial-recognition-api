@@ -47,10 +47,15 @@ async def sync_employees_from_payroll(
     for emp in employees:
         try:
             emp_no = emp.get("empNo") or emp.get("employeeNo") or emp.get("employeeId")
-            name = emp.get("employeeName") or emp.get("name") or f"Unknown-{emp_no}"
-            department = emp.get("departmentName") or emp.get("department")
+            name = (
+                emp.get("empName")
+                or emp.get("employeeName")
+                or emp.get("name")
+                or f"Unknown-{emp_no}"
+            )
+            department = emp.get("department") or emp.get("departmentName")
             email = emp.get("email")
-            phone = emp.get("phone") or emp.get("mobile")
+            phone = emp.get("mobileNo") or emp.get("phone") or emp.get("mobile")
 
             if not emp_no:
                 logger.warning("Skipping employee without empNo: %s", emp)
