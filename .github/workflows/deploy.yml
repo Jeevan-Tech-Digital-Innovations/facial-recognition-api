@@ -117,13 +117,13 @@ jobs:
           echo "Tags: ${{ steps.meta.outputs.tags }}"
 
   # ---------------------------------------------------------------
-  # Sync env vars to Coolify, trigger deploy, then health check
+  # Sync env vars to Coolify, then trigger deploy
   # ---------------------------------------------------------------
   deploy:
     name: Trigger Coolify Deploy
     runs-on: ubuntu-latest
     needs: [setup, build-and-push]
-    timeout-minutes: 20
+    timeout-minutes: 5
     environment: ${{ needs.setup.outputs.environment }}
 
     steps:
@@ -223,42 +223,6 @@ jobs:
           done
 
           echo "❌ Coolify webhook failed after $MAX_RETRIES attempts"
-          exit 1
-
-      # --- Poll Coolify API until container is running:healthy ---
-      - name: Health check — Facial Recognition API
-        run: |
-          COOLIFY_API=$(echo "${{ secrets.COOLIFY_WEBHOOK }}" | grep -oP 'https?://[^/]+')
-          APP_UUID="${{ vars.COOLIFY_APP_UUID }}"
-          MAX=20; COUNT=0
-
-          # Container takes ~40-60s to start; wait before polling
-          echo "Waiting 60s for container to start before polling..."
-          sleep 60
-
-          while [ $COUNT -lt $MAX ]; do
-            STATUS=$(curl -s \
-              -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
-              "$COOLIFY_API/api/v1/applications/$APP_UUID" \
-              | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','unknown'))" 2>/dev/null)
-
-            echo "[$((COUNT+1))/$MAX] Facial Recognition API status: $STATUS"
-
-            if [ "$STATUS" = "running:healthy" ]; then
-              echo "✅ Facial Recognition API is healthy."
-              exit 0
-            fi
-
-            if echo "$STATUS" | grep -qE '^exited|unhealthy'; then
-              echo "❌ Facial Recognition API failed to start: $STATUS"
-              exit 1
-            fi
-
-            COUNT=$((COUNT+1))
-            sleep 15
-          done
-
-          echo "❌ Facial Recognition API health check timed out after $((MAX * 15))s"
           exit 1
 
       - name: Deployment summary
